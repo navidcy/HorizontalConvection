@@ -31,13 +31,13 @@ using Printf
 # ### The grid
 
 H = 1.0          # vertical domain extent
-Lx = 4H          # horizontal domain extent
-Nx, Nz = 256, 64 # horizontal, vertical resolution
+Lx = 2H          # horizontal domain extent
+Nx, Nz = 128, 64 # horizontal, vertical resolution
 
-grid = RectilinearGrid(size = (Nx, Nz),
+grid = RectilinearGrid(GPU();
+                       size = (Nx, Nz),
                           x = (-Lx/2, Lx/2),
                           z = (-H, 0),
-                       halo = (3, 3),
                    topology = (Periodic, Flat, Bounded))
 
 # ### Boundary conditions
@@ -79,7 +79,7 @@ b_bcs = FieldBoundaryConditions(top = ValueBoundaryCondition(bˢ, parameters=(; 
 # prescribed ``Ra`` and ``Pr`` numbers. Here, we use ``Pr = 1`` and ``Ra = 10^8``:
 
 Pr = 1.0    # Prandtl number
-Ra = 1e8    # Rayleigh number
+Ra = 6.4e7  # Rayleigh number
 
 ν = sqrt(Pr * b★ * Lx^3 / Ra)  # Laplacian viscosity
 κ = ν * Pr                     # Laplacian diffusivity
@@ -91,7 +91,7 @@ nothing # hide
 # Runge-Kutta time-stepping scheme, and a `BuoyancyTracer`.
 
 model = NonhydrostaticModel(; grid,
-                            advection = WENO(),
+                            advection = WENO5(),
                             timestepper = :RungeKutta3,
                             tracers = :b,
                             buoyancy = BuoyancyTracer(),
@@ -103,10 +103,10 @@ model = NonhydrostaticModel(; grid,
 # We set up a simulation that runs up to ``t = 40`` with a `JLD2OutputWriter` that saves the flow
 # speed, ``\sqrt{u^2 + w^2}``, the buoyancy, ``b``, andthe vorticity, ``\partial_z u - \partial_x w``.
 
-stop_time = 4000
+stop_time = 600
 
 
-simulation = Simulation(model, Δt=1e-2, stop_time=stop_time)
+simulation = Simulation(model, Δt=5e-3, stop_time=stop_time)
 
 # ### The `TimeStepWizard`
 #
@@ -114,7 +114,7 @@ simulation = Simulation(model, Δt=1e-2, stop_time=stop_time)
 # (CFL) number close to `0.75` while ensuring the time-step does not increase beyond the 
 # maximum allowable value for numerical stability.
 
-wizard = TimeStepWizard(cfl=0.75, max_change=1.2, max_Δt=1e-1)
+wizard = TimeStepWizard(cfl=0.7, max_change=1.2, max_Δt=1e-1)
 
 simulation.callbacks[:wizard] = Callback(wizard, IterationInterval(50))
 
@@ -168,7 +168,7 @@ run!(simulation)
 # To start we load the saved fields are `FieldTimeSeries` and prepare for animating the flow by
 # creating coordinate arrays that each field lives on.
 
-using CairoMakie
+using GLMakie
 using Oceananigans
 using Oceananigans.Fields
 using Oceananigans.AbstractOperations: volume
@@ -296,7 +296,7 @@ nothing #hide
 # ```math
 # b_{\rm diff}(x, z) = b_s(x) \frac{\cosh \left [2 \pi (H + z) / L_x \right ]}{\cosh(2 \pi H / L_x)} \, ,
 # ```
-# which implies ``\langle \chi_{\rm diff} \rangle = \kappa b_*^2 \pi \tanh(2 \pi Η /Lx)``.
+# which implies ``\langle \chi_{\rm diff} \rangle = \kappa b_*^2 \pi \tanh(2 \pi Η /Lx)  / (L_x H)``.
 #
 # We use the loaded `FieldTimeSeries` to compute the Nusselt number from buoyancy and the volume
 # average kinetic energy of the fluid.
@@ -304,7 +304,7 @@ nothing #hide
 # First we compute the diffusive buoyancy dissipation, ``\chi_{\rm diff}`` (which is just a
 # scalar):
 
-χ_diff = κ * b★^2 * π * tanh(2π * H / Lx)
+χ_diff = κ * b★^2 * π * tanh(2π * H / Lx) / (Lx * H)
 nothing # hide
 
 # We then create two `ReducedField`s to store the volume integrals of the kinetic energy density
@@ -334,7 +334,7 @@ for i = 1:length(t)
     
     b = b_timeseries[i]
     sum!(∫ⱽ_mod²_∇b, (∂x(b)^2 + ∂z(b)^2) * volume)
-    Nu[i] = (κ *  ∫ⱽ_mod²_∇b[1, 1, 1]) / χ_diff
+    Nu[i] = (κ *  ∫ⱽ_mod²_∇b[1, 1, 1] / (Lx * H)) / χ_diff
 end
 
 fig = Figure(resolution = (850, 450))
