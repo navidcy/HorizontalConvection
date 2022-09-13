@@ -123,9 +123,19 @@ simulation.callbacks[:wizard] = Callback(wizard, IterationInterval(50))
 #
 # We write a function that prints out a helpful progress message while the simulation runs.
 
-progress(sim) = @printf("i: % 6d, sim time: % 1.3f, wall time: % 10s, Δt: % 1.4f, advective CFL: %.2e, diffusive CFL: %.2e\n",
-                        iteration(sim), time(sim), prettytime(sim.run_wall_time),
-                        sim.Δt, AdvectiveCFL(sim.Δt)(sim.model), DiffusiveCFL(sim.Δt)(sim.model))
+function progress(sim)
+  @info  @printf("i: % 6d, sim time: % 1.3f, wall time: % 10s, Δt: % 1.4f, advective CFL: %.2e, diffusive CFL: %.2e\n",
+                 iteration(sim),
+                 time(sim),
+                 prettytime(sim.run_wall_time),
+                 sim.Δt,
+                 AdvectiveCFL(sim.Δt)(sim.model),
+                 DiffusiveCFL(sim.Δt)(sim.model))
+
+    flush(stdout)
+
+    return nothing
+end
 
 simulation.callbacks[:progress] = Callback(progress, IterationInterval(500))
 
