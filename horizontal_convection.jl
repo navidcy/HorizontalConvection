@@ -28,16 +28,18 @@
 using Oceananigans
 using Printf
 
+arch = GPU()
+
 # ### The grid
 
-H = 1.0          # vertical domain extent
-Lx = 2H          # horizontal domain extent
-Nx, Nz = 128, 64 # horizontal, vertical resolution
+Lz = H = 1.0        # vertical domain extent
+Lx = 4H             # horizontal domain extent
+Nx, Nz = 512, 128   # horizontal, vertical resolution
 
-grid = RectilinearGrid(GPU();
+grid = RectilinearGrid(arch;
                        size = (Nx, Nz),
                           x = (-Lx/2, Lx/2),
-                          z = (-H, 0),
+                          z = (-Lz, 0),
                    topology = (Periodic, Flat, Bounded))
 
 # ### Boundary conditions
@@ -79,10 +81,10 @@ b_bcs = FieldBoundaryConditions(top = ValueBoundaryCondition(bˢ, parameters=(; 
 # prescribed ``Ra`` and ``Pr`` numbers. Here, we use ``Pr = 1`` and ``Ra = 10^8``:
 
 Pr = 1.0    # Prandtl number
-Ra = 6.4e7  # Rayleigh number
+Ra = 6.4e10  # Rayleigh number
 
 ν = sqrt(Pr * b★ * Lx^3 / Ra)  # Laplacian viscosity
-κ = ν * Pr                     # Laplacian diffusivity
+κ = ν / Pr                     # Laplacian diffusivity
 nothing # hide
 
 # ## Model instantiation
@@ -91,7 +93,7 @@ nothing # hide
 # Runge-Kutta time-stepping scheme, and a `BuoyancyTracer`.
 
 model = NonhydrostaticModel(; grid,
-                            advection = WENO5(),
+                            advection = WENO(),
                             timestepper = :RungeKutta3,
                             tracers = :b,
                             buoyancy = BuoyancyTracer(),
@@ -103,10 +105,9 @@ model = NonhydrostaticModel(; grid,
 # We set up a simulation that runs up to ``t = 40`` with a `JLD2OutputWriter` that saves the flow
 # speed, ``\sqrt{u^2 + w^2}``, the buoyancy, ``b``, andthe vorticity, ``\partial_z u - \partial_x w``.
 
-stop_time = 600
+stop_time = 2000
 
-
-simulation = Simulation(model, Δt=5e-3, stop_time=stop_time)
+simulation = Simulation(model, Δt=1e-3, stop_time=stop_time)
 
 # ### The `TimeStepWizard`
 #
@@ -114,7 +115,7 @@ simulation = Simulation(model, Δt=5e-3, stop_time=stop_time)
 # (CFL) number close to `0.75` while ensuring the time-step does not increase beyond the 
 # maximum allowable value for numerical stability.
 
-wizard = TimeStepWizard(cfl=0.7, max_change=1.2, max_Δt=1e-1)
+wizard = TimeStepWizard(cfl=0.75, max_change=1.2, max_Δt=1e-1)
 
 simulation.callbacks[:wizard] = Callback(wizard, IterationInterval(50))
 
@@ -122,11 +123,11 @@ simulation.callbacks[:wizard] = Callback(wizard, IterationInterval(50))
 #
 # We write a function that prints out a helpful progress message while the simulation runs.
 
-progress(sim) = @printf("i: % 6d, sim time: % 1.3f, wall time: % 10s, Δt: % 1.4f, CFL: %.2e\n",
+progress(sim) = @printf("i: % 6d, sim time: % 1.3f, wall time: % 10s, Δt: % 1.4f, advective CFL: %.2e, diffusive CFL: %.2e\n",
                         iteration(sim), time(sim), prettytime(sim.run_wall_time),
-                        sim.Δt, AdvectiveCFL(sim.Δt)(sim.model))
+                        sim.Δt, AdvectiveCFL(sim.Δt)(sim.model), DiffusiveCFL(sim.Δt)(sim.model))
 
-simulation.callbacks[:progress] = Callback(progress, IterationInterval(50))
+simulation.callbacks[:progress] = Callback(progress, IterationInterval(500))
 
 # ### Output
 #
@@ -138,7 +139,7 @@ u, v, w = model.velocities # unpack velocity `Field`s
 b = model.tracers.b        # unpack buoyancy `Field`
 
 ## total flow speed
-s = sqrt(u^2 + w^2)
+s = @at (Center, Center, Center) sqrt(u^2 + w^2)
 
 ## y-component of vorticity
 ζ = ∂z(u) - ∂x(w)
@@ -151,6 +152,7 @@ saved_output_filename = "horizontal_convection.jld2"
 
 simulation.output_writers[:fields] = JLD2OutputWriter(model, (; s, b, ζ),
                                                       schedule = TimeInterval(0.5),
+                                                      with_halos = true,
                                                       filename = saved_output_filename,
                                                       overwrite_existing = true)
 nothing # hide
@@ -183,8 +185,7 @@ b_timeseries = FieldTimeSeries(saved_output_filename, "b")
 times = b_timeseries.times
 
 ## Coordinate arrays
-xs, ys, zs = nodes(s_timeseries[1])
-xb, yb, zb = nodes(b_timeseries[1])
+xc, yc, zc = nodes(b_timeseries[1])
 xζ, yζ, zζ = nodes(ζ_timeseries[1])
 nothing # hide
 
@@ -192,7 +193,7 @@ nothing # hide
 
 for i in 1:length(times)
   bᵢ = b_timeseries[i]
-  χ_timeseries[i] .= κ * (∂x(bᵢ)^2 + ∂z(bᵢ)^2)
+  χ_timeseries[i] .= @at (Center, Center, Center) κ * (∂x(bᵢ)^2 + ∂z(bᵢ)^2)
 end
 
 
@@ -211,7 +212,7 @@ bₙ = @lift interior(b_timeseries[$n], :, 1, :)
 
 slim = 0.6
 blim = 0.6
-ζlim = 9
+ζlim = 3
 χlim = 0.025
 
 axis_kwargs = (xlabel = "x / H",
@@ -283,7 +284,7 @@ nothing #hide
 # Nu = \frac{\langle \chi \rangle}{\langle \chi_{\rm diff} \rangle} \, ,
 # ```
 #
-# where angle brackets above denote both a volume and time average and  ``\chi_{\rm diff}`` is
+# where angle brackets above denote both a volume and time average and ``\chi_{\rm diff}`` is
 # the buoyancy dissipation that we get without any flow, i.e., the buoyancy dissipation associated
 # with the buoyancy distribution that satisfies
 #
@@ -291,12 +292,13 @@ nothing #hide
 # \kappa \nabla^2 b_{\rm diff} = 0 \, ,
 # ```
 #
-# with the same boundary conditions same as our setup. In this case we can readily find that
+# with the same boundary conditions same as our setup. In this case, we can readily find that
 #
 # ```math
 # b_{\rm diff}(x, z) = b_s(x) \frac{\cosh \left [2 \pi (H + z) / L_x \right ]}{\cosh(2 \pi H / L_x)} \, ,
 # ```
-# which implies ``\langle \chi_{\rm diff} \rangle = \kappa b_*^2 \pi \tanh(2 \pi Η /Lx)  / (L_x H)``.
+# where $b_s(x)$ is the surface boundary condition. The diffusive solution implies 
+# ``\langle \chi_{\rm diff} \rangle = \kappa b_*^2 \pi \tanh(2 \pi Η /Lx) / (L_x H)``.
 #
 # We use the loaded `FieldTimeSeries` to compute the Nusselt number from buoyancy and the volume
 # average kinetic energy of the fluid.
@@ -307,15 +309,6 @@ nothing #hide
 χ_diff = κ * b★^2 * π * tanh(2π * H / Lx) / (Lx * H)
 nothing # hide
 
-# We then create two `ReducedField`s to store the volume integrals of the kinetic energy density
-# and the buoyancy dissipation. We need the `grid` to do so; the `grid` can be recoverd from
-# any `FieldTimeSeries`, e.g.,
-
-grid = b_timeseries.grid
-
-∫ⱽ_s² = Field{Nothing, Nothing, Nothing}(grid)
-∫ⱽ_mod²_∇b = Field{Nothing, Nothing, Nothing}(grid)
-
 # We recover the time from the saved `FieldTimeSeries` and construct two empty arrays to store
 # the volume-averaged kinetic energy and the instantaneous Nusselt number,
 
@@ -324,25 +317,28 @@ t = b_timeseries.times
 kinetic_energy, Nu = zeros(length(t)), zeros(length(t))
 nothing # hide
 
-# Now we can loop over the fields in the `FieldTimeSeries`, compute `KineticEnergy` and `Nu`,
-# and plot.
+# Now we can loop over the fields in the `FieldTimeSeries`, compute kinetic energy and ``Nu``,
+# and plot. We make use of `Integral` to compute the volume integral of fields over our domain.
 
 for i = 1:length(t)
-    s = s_timeseries[i]
-    sum!(∫ⱽ_s², s^2 * volume)
-    kinetic_energy[i] = 0.5 * ∫ⱽ_s²[1, 1, 1]  / (Lx * H)
+    ke = Field(Integral(1/2 * s_timeseries[i]^2 / (Lx * H)))
+    compute!(ke)
+    kinetic_energy[i] = ke[1, 1, 1]
     
-    b = b_timeseries[i]
-    sum!(∫ⱽ_mod²_∇b, (∂x(b)^2 + ∂z(b)^2) * volume)
-    Nu[i] = (κ *  ∫ⱽ_mod²_∇b[1, 1, 1] / (Lx * H)) / χ_diff
+    χ = Field(Integral(χ_timeseries[i] / (Lx * H)))
+    compute!(χ)
+
+    Nu[i] = χ[1, 1, 1] / χ_diff
 end
 
 fig = Figure(resolution = (850, 450))
  
-ax_KE = Axis(fig[1, 1], xlabel = "time", ylabel = "KE / (b⋆H)")
+ax_KE = Axis(fig[1, 1], xlabel = L"t \, (b_* / L_x)^{1/2}", ylabel = L"KE $ / (L_x b_*)$")
 lines!(ax_KE, t, kinetic_energy; linewidth = 3)
 
-ax_Nu = Axis(fig[2, 1], xlabel = "time", ylabel = "Nu")
+ax_Nu = Axis(fig[2, 1], xlabel = L"t \, (b_* / L_x)^{1/2}", ylabel = L"Nu")
 lines!(ax_Nu, t, Nu; linewidth = 3)
 
-current_figure() # hide
+fig
+
+save("KE_Nu.png", fig)
