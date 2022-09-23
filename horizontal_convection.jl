@@ -30,11 +30,23 @@ using Printf
 
 arch = GPU()
 
+save_checkpointer_interval = 50
+save_fields_interval = 0.5
+
+Ra = 6.4e10  # Rayleigh number
+
+output_path = joinpath(@__DIR__, "output/2D_" * string(Ra) * "/")
+if !isdir(output_path); mkdir(output_path); end
+
+saved_output_filename = "2Dhc_" * string(Ra) * ".jld2"
+
+
 # ### The grid
 
 Lz = H = 1.0        # vertical domain extent
 Lx = 4H             # horizontal domain extent
-Nx, Nz = 512, 128   # horizontal, vertical resolution
+Nx, Nz = 2048, 512  # horizontal, vertical resolution
+Nx, Nz = 1048, 256  # horizontal, vertical resolution
 
 grid = RectilinearGrid(arch;
                        size = (Nx, Nz),
@@ -53,7 +65,7 @@ grid = RectilinearGrid(arch;
 
 b★ = 1.0
 
-@inline bˢ(x, y, t, p) = - p.b★ * cos(2π * x / p.Lx)
+@inline bˢ(x, y, t, parameters) = - parameters.b★ * cos(2π * x / parameters.Lx)
 
 b_bcs = FieldBoundaryConditions(top = ValueBoundaryCondition(bˢ, parameters=(; b★, Lx)))
 
@@ -80,8 +92,8 @@ b_bcs = FieldBoundaryConditions(top = ValueBoundaryCondition(bˢ, parameters=(; 
 # We use isotropic viscosity and diffusivities, `ν` and `κ` whose values are obtain from the
 # prescribed ``Ra`` and ``Pr`` numbers. Here, we use ``Pr = 1`` and ``Ra = 10^8``:
 
-Pr = 1.0    # Prandtl number
-Ra = 6.4e10  # Rayleigh number
+Pr = 1.0     # Prandtl number
+
 
 ν = sqrt(Pr * b★ * Lx^3 / Ra)  # Laplacian viscosity
 κ = ν / Pr                     # Laplacian diffusivity
@@ -93,7 +105,7 @@ nothing # hide
 # Runge-Kutta time-stepping scheme, and a `BuoyancyTracer`.
 
 model = NonhydrostaticModel(; grid,
-                            advection = WENO(),
+                            advection = WENO5(),
                             timestepper = :RungeKutta3,
                             tracers = :b,
                             buoyancy = BuoyancyTracer(),
@@ -105,9 +117,9 @@ model = NonhydrostaticModel(; grid,
 # We set up a simulation that runs up to ``t = 40`` with a `JLD2OutputWriter` that saves the flow
 # speed, ``\sqrt{u^2 + w^2}``, the buoyancy, ``b``, andthe vorticity, ``\partial_z u - \partial_x w``.
 
-stop_time = 2000
+stop_time = 10000
 
-simulation = Simulation(model, Δt=1e-3, stop_time=stop_time)
+simulation = Simulation(model, Δt=5e-4, stop_time=stop_time)
 
 # ### The `TimeStepWizard`
 #
@@ -115,7 +127,7 @@ simulation = Simulation(model, Δt=1e-3, stop_time=stop_time)
 # (CFL) number close to `0.75` while ensuring the time-step does not increase beyond the 
 # maximum allowable value for numerical stability.
 
-wizard = TimeStepWizard(cfl=0.75, max_change=1.2, max_Δt=1e-1)
+wizard = TimeStepWizard(cfl=0.75, max_change=1.1, max_Δt=1e-1)
 
 simulation.callbacks[:wizard] = Callback(wizard, IterationInterval(50))
 
@@ -124,20 +136,20 @@ simulation.callbacks[:wizard] = Callback(wizard, IterationInterval(50))
 # We write a function that prints out a helpful progress message while the simulation runs.
 
 function progress(sim)
-  @info  @printf("i: % 6d, sim time: % 1.3f, wall time: % 10s, Δt: % 1.4f, advective CFL: %.2e, diffusive CFL: %.2e\n",
-                 iteration(sim),
-                 time(sim),
-                 prettytime(sim.run_wall_time),
-                 sim.Δt,
-                 AdvectiveCFL(sim.Δt)(sim.model),
-                 DiffusiveCFL(sim.Δt)(sim.model))
+  @info  @sprintf("i: % 6d, sim time: % 1.3f, wall time: % 10s, Δt: % 1.4f, advective CFL: %.2e, diffusive CFL: %.2e\n",
+                  iteration(sim),
+                  time(sim),
+                  prettytime(sim.run_wall_time),
+                  sim.Δt,
+                  AdvectiveCFL(sim.Δt)(sim.model),
+                  DiffusiveCFL(sim.Δt)(sim.model))
 
     flush(stdout)
 
     return nothing
 end
 
-simulation.callbacks[:progress] = Callback(progress, IterationInterval(500))
+simulation.callbacks[:progress] = Callback(progress, IterationInterval(200))
 
 # ### Output
 #
@@ -160,9 +172,16 @@ nothing # hide
 
 saved_output_filename = "horizontal_convection.jld2"
 
+simulation.output_writers[:checkpointer] = Checkpointer(model,
+                                                        schedule = TimeInterval(save_checkpointer_interval),
+                                                        dir = output_path,
+                                                        prefix = saved_output_filename,
+                                                        overwrite_existing = true)
+
 simulation.output_writers[:fields] = JLD2OutputWriter(model, (; s, b, ζ),
-                                                      schedule = TimeInterval(0.5),
+                                                      schedule = TimeInterval(save_fields_interval),
                                                       with_halos = true,
+                                                      dir = output_path,
                                                       filename = saved_output_filename,
                                                       overwrite_existing = true)
 nothing # hide
@@ -180,12 +199,11 @@ run!(simulation)
 # To start we load the saved fields are `FieldTimeSeries` and prepare for animating the flow by
 # creating coordinate arrays that each field lives on.
 
-using GLMakie
+
+using CairoMakie
 using Oceananigans
 using Oceananigans.Fields
 using Oceananigans.AbstractOperations: volume
-
-saved_output_filename = "horizontal_convection.jld2"
 
 ## Open the file with our data
 s_timeseries = FieldTimeSeries(saved_output_filename, "s")
@@ -205,7 +223,6 @@ for i in 1:length(times)
   bᵢ = b_timeseries[i]
   χ_timeseries[i] .= @at (Center, Center, Center) κ * (∂x(bᵢ)^2 + ∂z(bᵢ)^2)
 end
-
 
 # Now we're ready to animate using Makie.
 
