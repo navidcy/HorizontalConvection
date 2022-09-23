@@ -38,7 +38,7 @@ Ra = 6.4e10  # Rayleigh number
 output_path = joinpath(@__DIR__, "output/2D_" * string(Ra) * "/")
 if !isdir(output_path); mkdir(output_path); end
 
-saved_output_filename = "2Dhc_" * string(Ra) * ".jld2"
+saved_output_filename = "2Dhc_" * string(Ra)
 
 
 # ### The grid
@@ -136,7 +136,7 @@ simulation.callbacks[:wizard] = Callback(wizard, IterationInterval(50))
 # We write a function that prints out a helpful progress message while the simulation runs.
 
 function progress(sim)
-  @info  @sprintf("i: % 6d, sim time: % 1.3f, wall time: % 10s, Δt: % 1.4f, advective CFL: %.2e, diffusive CFL: %.2e\n",
+  @info  @printf("i: % 6d, sim time: % 1.3f, wall time: % 10s, Δt: % 1.4f, advective CFL: %.2e, diffusive CFL: %.2e\n",
                   iteration(sim),
                   time(sim),
                   prettytime(sim.run_wall_time),
@@ -145,8 +145,6 @@ function progress(sim)
                   DiffusiveCFL(sim.Δt)(sim.model))
 
     flush(stdout)
-
-    return nothing
 end
 
 simulation.callbacks[:progress] = Callback(progress, IterationInterval(200))
@@ -206,9 +204,9 @@ using Oceananigans.Fields
 using Oceananigans.AbstractOperations: volume
 
 ## Open the file with our data
-s_timeseries = FieldTimeSeries(saved_output_filename, "s")
-b_timeseries = FieldTimeSeries(saved_output_filename, "b")
-ζ_timeseries = FieldTimeSeries(saved_output_filename, "ζ")
+s_timeseries = FieldTimeSeries(joinpath(output_path, saved_output_filename), "s")
+b_timeseries = FieldTimeSeries(joinpath(output_path, saved_output_filename), "b")
+ζ_timeseries = FieldTimeSeries(joinpath(output_path, saved_output_filename), "ζ")
 
 times = b_timeseries.times
 
